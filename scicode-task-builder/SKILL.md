@@ -80,6 +80,8 @@ If the user hands over a paper without much architecture detail already worked o
 - LaTeX: `\( inline \)` and `\[ display \]`
 - State units for EVERY parameter
 - Full docstring: Inputs, Outputs, Raises
+- The docstrings in the function templates of the prompts must EXACTLY match those in the corresponding solutions
+- The prompt section must contain NO MORE THAN ONE Python code string/block
 - Return stub must EXACTLY match the solution's return — copy-paste the return block between them
 - Explicitly state `None`/null rejection, default values, edge cases
 
@@ -127,35 +129,58 @@ Mechanical rules that always hold, whatever the count:
 
 - `if X is None or not np.isfinite(X):` — the `None` check goes BEFORE `isfinite`
 - Cast every output explicitly: `float(...)`, `int(...)`
+- Solution Ordering: Unchanged SP1 function, followed by unchanged SP2 function, and then the Main Problem function that calls and uses both
 - The MP solution embeds complete copies of the SP1 and SP2 functions
 - Embedded copies must match the SP1/SP2 solutions exactly (copy-paste, don't retype)
 
-### Phase 3 — Validator (Tier 1 & 2)
+### Phase 3 — Quality Control (QC1 & QC2 Validation)
 
-| Validator Error | Fix |
+When syncing the notebook to the CTP workbench, Tier 1 and Tier 2 validation are triggered automatically. Always monitor the validation sequence in the Activity tab on the right side.
+
+#### QC1: Deterministic and Structural Checks (Non-bypassable)
+Resolve every valid QC1 flag directly in the Colab notebook.
+
+| QC1 Error | Root Cause & Fix |
 |---|---|
-| `Missing Assert Statements` in test_case_N | The asserts are trapped inside a nested `def` — move them back to `test_case_N`'s top level. (A nested `def` that only computes an expected value, called before the asserts, is fine and doesn't trigger this.) |
-| `Tests Do Not Reference Declared Function` | Move the main function call to the top level, out of any nested def |
-| `prompt return does not match solution` | Copy-paste the return block so both are identical, whitespace included |
-| `None/null handling not covered` | Add a test with `except (ValueError, TypeError)` for None inputs |
-| `IndentationError line 1` | Remove ALL blank lines and comments before `def test_case_N():` |
-| `test block exec failed` | Make the test self-contained; remove any cross-block dependency |
+| `Missing Assert Statements` in test_case_N | Asserts are trapped inside a nested `def` — move them back to `test_case_N`'s top level. |
+| `Tests Do Not Reference Declared Function` | Move the main function call to the top level, out of any nested def. |
+| `prompt return does not match solution` | Copy-paste the return block so both are identical, whitespace included. |
+| `docstring does not match solution` | Copy-paste the docstring from the solution into the prompt template. |
+| `Multiple code blocks in prompt` | Keep strictly ONE Python code string/block in the prompt section. |
+| `None/null handling not covered` | Add a test with `except (ValueError, TypeError)` for None inputs. |
+| `IndentationError line 1` | Remove ALL blank lines and comments before `def test_case_N():`. |
+| `test block exec failed` | Make the test self-contained; remove any cross-block dependency. |
 
-### Phase 4 — Pass@k Calibration (Gemini 3.1 Pro, 8 runs)
+#### QC2: Evaluation & Defensible Flags
+QC2 evaluates scientific correctness, test-case discriminativeness, and determinism.
+- **Genuine Issue:** Fix in Colab, save, sync, and re-validate.
+- **False Positive:** Provide a detailed, factual, non-vague defense in the platform's response field explaining why the task is scientifically correct and why the automated check does not apply.
 
-| Pass Rate | Status | Action |
-|---|---|---|
-| 0/8 | Too hard | Read which tests fail; fix the blocker (usually `None` handling or a structural test), keep the discriminator |
-| 1–5/8 | In band | Done — submit (2–3/8 is the sweet spot; see Phase 1 Step 3) |
-| 6–7/8 | Slightly easy | Add a discriminative test, or tighten a tolerance |
-| 8/8 | Too easy | Add a new return key, change the return shape, or add a numerical trap |
+### Phase 4 — Model Pass-Rate Evaluation Ladder (Gemini 3.1 Pro → GPT-5.6 → Claude Opus 4.8)
 
-**Debugging 0/8:** read the model-response transcript to find which tests fail and why. Common causes:
-- `TypeError: ufunc 'isfinite' not supported` → the test only catches `except ValueError` → widen to `except (ValueError, TypeError)`
-- `NameError: name '...' not defined` → an MP test calls an SP1/SP2 function directly → make it self-contained: hand-derive the expected value inline, or hardcode a golden value from running the correct solution once
-- `AssertionError` on a structural test → the model returns the wrong tuple length or dict keys → check whether the requirement is stricter than it needs to be
+Automated pass-rate evaluation is run 8 times per problem component (SP1, SP2, MP).
 
-**Debugging 8/8:** the model is reading the spec and implementing it correctly every time. Add one new requirement with a natural-mistake trap — a new dict key with a numerical trap, an extra tuple element the natural implementation would omit, or a numerical edge case that's easy to get wrong (see `references/difficulty-levers.md`). Then re-verify: reference solution still passes everything, the natural mistake now fails the new discriminative test, and the estimated pass rate lands back at 2–5/8.
+#### Model Sequence & Escalation Rules
+1. **Base Model:** Start on **Gemini 3.1 Pro** for all problems.
+2. **Acceptance Threshold:** All components (SP1, SP2, MP) must score between **1/8 and 5/8 (inclusive) on the SAME model**.
+3. **Immediate Rejection Threshold:** Any score of **6/8, 7/8, or 8/8 on ANY component** immediately rejects the task (too easy). Rework the difficulty levers, save, sync, pass QC, and rerun.
+4. **Progression (0/8 rule):** A score of **0/8 on any component** (with no component $\ge 6/8$) triggers escalation to the next stronger model:
+   $$\text{Gemini 3.1 Pro} \longrightarrow \text{GPT-5.6} \longrightarrow \text{Claude Opus 4.8}$$
+5. **Task Not Submittable:** If Claude Opus 4.8 still yields 0/8 or fails to get all parts into 1–5/8 without exceeding 5/8, the task is discarded.
+
+#### CTP UI Controls: Unit Re-run vs Header Continue
+- **Per-Problem Unit Re-run (Lightning icon on SP1 / SP2 / MP):**
+  - Use after changing that problem's code/tests and syncing Colab.
+  - Restarts Gemini for that problem only (live k). This is your calibration loop.
+- **Header Continue ("Continue GPT on all problems"):**
+  - Use ONLY when Gemini has finished on every problem, is in progression (has 0/8 with none $\ge 6/8$), and the UI indicates escalation.
+  - Runs the next model on ALL problems simultaneously.
+  - *Do NOT use Continue* if you just synced a notebook fix, or if any problem scored $\ge 6/8$.
+- **Note:** Syncing Colab alone does NOT clear old pass@k scores; clicking Re-run does.
+
+#### Calibration & Debugging
+- **Debugging 0/8:** Read model response transcript. Common blockers: `TypeError: ufunc 'isfinite' not supported` (widen to `except (ValueError, TypeError)`), `NameError` in MP (inline reference values instead of calling SP), or overly strict tuple/dict shape requirements.
+- **Debugging 6–8/8 (Too Easy):** Add a subtle difficulty trap from `references/difficulty-levers.md` (e.g. $n$ vs $n-2$ degrees-of-freedom denominator, factor of 2 in $\chi^2_{\text{red}}$, boundary inclusive/exclusive check). Verify that reference solution passes while the natural mistake fails.
 
 ---
 
